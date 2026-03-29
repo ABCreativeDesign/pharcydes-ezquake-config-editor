@@ -1,0 +1,36 @@
+{
+  "name": "pharcydes-ezquake-config-editor",
+  "version": "1.0.0",
+  "description": "PharCyde's ezQuake Config Editor",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build-meta": "node build-meta.js",
+    "assemble": "node assemble.js",
+    "dist": "electron-builder --win"
+  },
+  "build": {
+    "appId": "com.pharcyde.ezquake-config-editor",
+    "productName": "PharCyde's ezQuake Config Editor",
+    "win": {
+      "target": "portable",
+      "icon": "icon.ico",
+      "sign": false
+    },
+    "files": [
+      "config-editor.html",
+      "main.js",
+      "preload.js",
+      "icon.ico"
+    ],
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "devDependencies": {
+    "electron": "^35.0.0",
+    "electron-builder": "^25.0.0",
+    "png-to-ico": "^3.0.1"
+  }
+}

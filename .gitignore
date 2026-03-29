@@ -1,0 +1,7 @@
+node_modules/
+dist/
+meta-generated.js
+config-editor.html
+config.cfg
+ezquake-source-master/
+.claude/
