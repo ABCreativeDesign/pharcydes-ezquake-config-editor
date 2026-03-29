@@ -117,6 +117,23 @@ button:disabled{opacity:.35;cursor:not-allowed;pointer-events:none}
 .tip::after{content:attr(data-tip);position:absolute;right:18px;top:50%;transform:translateY(-50%);background:#1a1a1a;border:1px solid #333;border-radius:4px;padding:8px 10px;font-size:11px;line-height:1.5;color:var(--text);white-space:pre-wrap;max-width:300px;z-index:200;pointer-events:none;opacity:0;transition:opacity .15s;word-break:break-word;font-family:'Segoe UI',system-ui,sans-serif;min-width:140px}
 .tip:hover::after{opacity:1}
 
+/* BUTTON TOOLTIPS */
+.btn-wrap{position:relative;display:inline-block}
+.btn-wrap::after{content:attr(data-tip);position:absolute;top:calc(100% + 9px);left:50%;transform:translateX(-50%);background:#1a1a1a;border:1px solid #333;border-radius:4px;padding:6px 9px;font-size:11px;line-height:1.4;color:var(--text);white-space:nowrap;z-index:500;pointer-events:none;opacity:0;transition:opacity .12s;transition-delay:0s}
+.btn-wrap::before{content:'';position:absolute;top:calc(100% + 1px);left:50%;transform:translateX(-50%);border:5px solid transparent;border-bottom-color:#333;z-index:501;pointer-events:none;opacity:0;transition:opacity .12s;transition-delay:0s}
+.btn-wrap:hover::after,.btn-wrap:hover::before{opacity:1;transition-delay:.6s}
+.btn-wrap.tip-right::after{left:auto;right:0;transform:none}
+.btn-wrap.tip-right::before{left:auto;right:14px;transform:none}
+
+/* COACH MARK */
+#coach-overlay{position:fixed;inset:0;z-index:1000;pointer-events:none}
+#coach-mark{position:absolute;background:#1e1e1e;border:1px solid var(--accent);border-radius:6px;padding:14px 16px;width:220px;box-shadow:0 8px 32px rgba(0,0,0,.7);pointer-events:all}
+#coach-mark::before{content:'';position:absolute;top:-7px;left:24px;border:6px solid transparent;border-bottom-color:var(--accent);border-top:none}
+#coach-mark h3{font-size:12px;font-weight:700;color:#fff;margin-bottom:6px}
+#coach-mark p{font-size:11px;color:#aaa;line-height:1.55;margin-bottom:12px}
+#coach-mark button{float:right;font-size:11px;padding:4px 12px;background:var(--accent);border:none;color:#fff;font-weight:600;border-radius:3px;cursor:pointer}
+#coach-mark button:hover{background:#c85000}
+
 /* INPUTS */
 input[type=text],input[type=number]{background:var(--bg);border:1px solid var(--border);border-radius:3px;padding:4px 7px;color:var(--text);font-size:12px;font-family:'Cascadia Code','Consolas',monospace;outline:none;transition:border-color .12s}
 input[type=text]:focus,input[type=number]:focus{border-color:var(--accent)}
@@ -174,10 +191,20 @@ input[type=range]{accent-color:var(--accent);cursor:pointer}
   <span id="filename">No file loaded</span>
   <span id="mod-badge"></span>
   <div class="spacer"></div>
-  <button onclick="loadCfg()">Load .cfg</button>
+  <span class="btn-wrap" data-tip="Load an existing config.cfg file."><button onclick="loadCfg()">Load .cfg</button></span>
   <input type="file" id="file-in" accept=".cfg" style="display:none">
-  <button class="primary" id="save-btn" disabled onclick="saveCfg()">Save .cfg</button>
-  <button id="export-btn" disabled onclick="exportCfg()">Export .cfg</button>
+  <span class="btn-wrap" data-tip="Overwrite this config.cfg file."><button class="primary" id="save-btn" disabled onclick="saveCfg()">Save .cfg</button></span>
+  <span class="btn-wrap tip-right" data-tip="Export this config.cfg to a location of your choosing."><button id="export-btn" disabled onclick="exportCfg()">Export .cfg</button></span>
+</div>
+
+<!-- Coach mark overlay -->
+<div id="coach-overlay" style="display:none">
+  <div id="coach-mark">
+    <h3>Start here</h3>
+    <p>Click <strong style="color:var(--text)">Load .cfg</strong> to open your ezQuake config file and begin editing.</p>
+    <button onclick="dismissCoach()">Got it</button>
+    <div style="clear:both"></div>
+  </div>
 </div>
 
 <div id="layout">
@@ -220,7 +247,7 @@ input[type=range]{accent-color:var(--accent);cursor:pointer}
 
     <!-- Search + section list -->
     <div id="search-wrap">
-      <input id="search" type="text" placeholder="Search variables &amp; sections…" oninput="renderSectionList(this.value)">
+      <input id="search" type="text" placeholder="Search variables &amp; sections…" oninput="renderSectionListDebounced(this.value)">
     </div>
     <div id="tab-list"></div>
 
@@ -263,23 +290,39 @@ input[type=range]{accent-color:var(--accent);cursor:pointer}
 const META={};const TABS=[];/*META_INJECT*/
 let cfg = null;
 
-// ── Favorites ─────────────────────────────────────────────────────────────────
-let favorites = {sections:[],variables:[]};
-try{ const raw=localStorage.getItem('ez-favorites'); if(raw) favorites=JSON.parse(raw); }catch(e){}
+// ── Lookup caches (built once from static data) ───────────────────────────────
+// O(1) tab/section lookup for navigateToVar
+const varIndex = {};
+for(const tab of TABS) for(const sec of tab.secs) for(const key of sec.vars) varIndex[key]={tab,sec};
 
-function saveFavorites(){ try{ localStorage.setItem('ez-favorites', JSON.stringify(favorites)); }catch(e){} }
+// Pre-lowercased keys + labels for search (avoids toLowerCase on every keystroke)
+const searchCache = {};
+for(const tab of TABS) for(const sec of tab.secs){
+  for(const key of sec.vars) if(!searchCache[key]) searchCache[key]={lk:key.toLowerCase(),ll:null};
+  for(const bind of (sec.binds||[])) if(!searchCache[bind.c]) searchCache[bind.c]={lk:bind.c.toLowerCase(),ll:bind.l.toLowerCase()};
+}
+
+function debounce(fn,ms){ let t; return (...a)=>{clearTimeout(t);t=setTimeout(()=>fn(...a),ms);}; }
+
+// ── Favorites ─────────────────────────────────────────────────────────────────
+let favorites = {sections:new Set(),variables:new Set()};
+try{
+  const raw=localStorage.getItem('ez-favorites');
+  if(raw){ const p=JSON.parse(raw); favorites={sections:new Set(p.sections||[]),variables:new Set(p.variables||[])}; }
+}catch(e){}
+
+function saveFavorites(){ try{ localStorage.setItem('ez-favorites', JSON.stringify({sections:[...favorites.sections],variables:[...favorites.variables]})); }catch(e){} }
 
 function addFav(type, id){
-  const arr = type==='section' ? favorites.sections : favorites.variables;
-  if(!arr.includes(id)){ arr.push(id); saveFavorites(); renderFavorites(); }
+  const set = type==='section' ? favorites.sections : favorites.variables;
+  if(!set.has(id)){ set.add(id); saveFavorites(); renderFavorites(); }
 }
 function removeFav(type, id){
-  if(type==='section') favorites.sections = favorites.sections.filter(s=>s!==id);
-  else                 favorites.variables = favorites.variables.filter(k=>k!==id);
+  (type==='section' ? favorites.sections : favorites.variables).delete(id);
   saveFavorites(); renderFavorites();
 }
 function isFav(type, id){
-  return type==='section' ? favorites.sections.includes(id) : favorites.variables.includes(id);
+  return type==='section' ? favorites.sections.has(id) : favorites.variables.has(id);
 }
 
 function toggleFavPane(){
@@ -292,9 +335,9 @@ function toggleFavCat(id){
 function renderFavorites(){
   // Sections
   const secList = document.getElementById('fav-sec-list');
-  document.getElementById('fav-sec-count').textContent = favorites.sections.length;
+  document.getElementById('fav-sec-count').textContent = favorites.sections.size;
   secList.innerHTML = '';
-  if(!favorites.sections.length){
+  if(!favorites.sections.size){
     secList.innerHTML = '<div class="fav-empty">No favorites yet</div>';
   } else {
     for(const name of favorites.sections){
@@ -313,9 +356,9 @@ function renderFavorites(){
 
   // Variables
   const varList = document.getElementById('fav-var-list');
-  document.getElementById('fav-var-count').textContent = favorites.variables.length;
+  document.getElementById('fav-var-count').textContent = favorites.variables.size;
   varList.innerHTML = '';
-  if(!favorites.variables.length){
+  if(!favorites.variables.size){
     varList.innerHTML = '<div class="fav-empty">No favorites yet</div>';
   } else {
     for(const key of favorites.variables){
@@ -715,6 +758,14 @@ function refreshBadge(){
 // ── Table builder ─────────────────────────────────────────────────────────────
 function buildTable(keys){
   const tbl=document.createElement('table'); tbl.className='var-table';
+  // Single delegated context menu listener for all rows
+  tbl.addEventListener('contextmenu', ev=>{
+    const row=ev.target.closest('tr[data-key]');
+    if(!row) return;
+    ev.preventDefault(); ev.stopPropagation();
+    const key=row.dataset.key;
+    showCtxMenu(ev, isFav('variable',key)?'remove':'add', 'variable', key);
+  });
   for(const key of keys){
     if(!cfg.varMap[key]) cfg.varMap[key]={value:'',original:null,lineIndex:-1};
     const e=cfg.varMap[key];
@@ -726,12 +777,6 @@ function buildTable(keys){
     const tr=document.createElement('tr');
     tr.className='var-row'+(mod?' modified':'');
     tr.dataset.key=key;
-
-    // Right-click on row → add/remove variable from favorites
-    tr.addEventListener('contextmenu', ev=>{
-      ev.preventDefault(); ev.stopPropagation();
-      showCtxMenu(ev, isFav('variable',key)?'remove':'add', 'variable', key);
-    });
 
     const tdL=document.createElement('td'); tdL.className='vcell-label';
     tdL.innerHTML=`<div class="vlabel">${esc(label)}</div><div class="vrawkey">${esc(key)}</div>`;
@@ -752,24 +797,20 @@ function buildTable(keys){
 // ── Sidebar ───────────────────────────────────────────────────────────────────
 function navigateToVar(key){
   if(!cfg) return;
-  for(const tab of TABS){
-    for(const sec of tab.secs){
-      if(sec.vars.includes(key)){
-        const needSwitch = activeTab!==tab;
-        if(needSwitch) selectTab(tab);
-        setTimeout(()=>{
-          const row=document.querySelector(`tr[data-key="${CSS.escape(key)}"]`);
-          if(row){
-            row.scrollIntoView({behavior:'smooth',block:'center'});
-            row.classList.add('highlight');
-            setTimeout(()=>row.classList.remove('highlight'),1200);
-          }
-        }, needSwitch?60:0);
-        return;
-      }
+  const loc=varIndex[key]; if(!loc) return;
+  const needSwitch=activeTab!==loc.tab;
+  if(needSwitch) selectTab(loc.tab);
+  setTimeout(()=>{
+    const row=document.querySelector(`tr[data-key="${CSS.escape(key)}"]`);
+    if(row){
+      row.scrollIntoView({behavior:'smooth',block:'center'});
+      row.classList.add('highlight');
+      setTimeout(()=>row.classList.remove('highlight'),1200);
     }
-  }
+  }, needSwitch?60:0);
 }
+
+const renderSectionListDebounced = debounce(renderSectionList, 200);
 
 function renderSectionList(filter=''){
   const lf=filter.toLowerCase().trim();
@@ -783,11 +824,13 @@ function renderSectionList(filter=''){
     for(const sec of tab.secs){
       if(sec.n.toLowerCase().includes(lf)) secMatches.push({sec,tab});
       for(const key of sec.vars){
-        const label=deriveLabel(key).toLowerCase();
-        if(key.toLowerCase().includes(lf)||label.includes(lf)) varMatches.push({key,sec,tab});
+        const c=searchCache[key]||(searchCache[key]={lk:key.toLowerCase(),ll:null});
+        const ll=c.ll||(c.ll=deriveLabel(key).toLowerCase());
+        if(c.lk.includes(lf)||ll.includes(lf)) varMatches.push({key,sec,tab});
       }
       for(const bind of (sec.binds||[])){
-        if(bind.l.toLowerCase().includes(lf)||bind.c.toLowerCase().includes(lf))
+        const c=searchCache[bind.c]||(searchCache[bind.c]={lk:bind.c.toLowerCase(),ll:bind.l.toLowerCase()});
+        if(c.ll.includes(lf)||c.lk.includes(lf))
           varMatches.push({key:bind.c,label:bind.l,sec,tab,isBind:true});
       }
     }
@@ -942,9 +985,26 @@ document.getElementById('file-in').addEventListener('change',function(e){
   readFile(file);
 });
 
+// ── Coach mark ────────────────────────────────────────────────────────────────
+function showCoach(){
+  const overlay=document.getElementById('coach-overlay');
+  const mark=document.getElementById('coach-mark');
+  overlay.style.display='block';
+  // Position below the Load button, arrow pointing up at it
+  const loadBtn=document.querySelector('#topbar .btn-wrap');
+  const rect=loadBtn.getBoundingClientRect();
+  mark.style.top=(rect.bottom+10)+'px';
+  mark.style.left=rect.left+'px';
+}
+function dismissCoach(){
+  document.getElementById('coach-overlay').style.display='none';
+  try{ localStorage.setItem('ez-onboarded','1'); }catch(e){}
+}
+
 // Init
 renderTabList();
 renderFavorites();
+try{ if(!localStorage.getItem('ez-onboarded')) showCoach(); }catch(e){}
 </script>
 </body>
 </html>
