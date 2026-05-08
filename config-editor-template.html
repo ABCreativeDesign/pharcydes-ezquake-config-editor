@@ -1357,17 +1357,42 @@
         }
       } catch (e) {}
 
-      // One-time migration: legacy unqualified "Movement" → "Controls/Movement".
-      // Only runs once (gated by ez-favorites-migrated-v1) so a user re-adding
-      // plain "Movement" later doesn't get it auto-rewritten.
+      // Favorites schema migrations — single integer version key replaces the
+      // old per-migration flags (ez-favorites-migrated-v1/v2). To add a new
+      // migration: bump FAVORITES_SCHEMA_LATEST and append a case to the switch.
+      // Each migration runs exactly once; user removals after that stick.
+      const FAVORITES_SCHEMA_LATEST = 2;
       try {
-        if (
-          !localStorage.getItem("ez-favorites-migrated-v1") &&
-          favorites.sections.has("Movement") &&
-          !favorites.sections.has("Controls/Movement")
-        ) {
-          favorites.sections.delete("Movement");
-          favorites.sections.add("Controls/Movement");
+        let current = parseInt(
+          localStorage.getItem("ez-favorites-schema") || "0",
+          10,
+        );
+        if (!Number.isFinite(current)) current = 0;
+        let mutated = false;
+        while (current < FAVORITES_SCHEMA_LATEST) {
+          switch (current) {
+            case 0:
+              // v1: legacy unqualified "Movement" → "Controls/Movement"
+              if (
+                favorites.sections.has("Movement") &&
+                !favorites.sections.has("Controls/Movement")
+              ) {
+                favorites.sections.delete("Movement");
+                favorites.sections.add("Controls/Movement");
+                mutated = true;
+              }
+              break;
+            case 1:
+              // v2: backfill "Controls/Weapons" default
+              if (!favorites.sections.has("Controls/Weapons")) {
+                favorites.sections.add("Controls/Weapons");
+                mutated = true;
+              }
+              break;
+          }
+          current++;
+        }
+        if (mutated) {
           localStorage.setItem(
             "ez-favorites",
             JSON.stringify({
@@ -1376,26 +1401,10 @@
             }),
           );
         }
-        localStorage.setItem("ez-favorites-migrated-v1", "1");
-      } catch (e) {}
-
-      // One-time migration v2: backfill "Controls/Weapons" for users who set up
-      // favorites before this default was added. Gated so removal sticks.
-      try {
-        if (
-          !localStorage.getItem("ez-favorites-migrated-v2") &&
-          !favorites.sections.has("Controls/Weapons")
-        ) {
-          favorites.sections.add("Controls/Weapons");
-          localStorage.setItem(
-            "ez-favorites",
-            JSON.stringify({
-              sections: [...favorites.sections],
-              variables: [...favorites.variables],
-            }),
-          );
-        }
-        localStorage.setItem("ez-favorites-migrated-v2", "1");
+        localStorage.setItem(
+          "ez-favorites-schema",
+          String(FAVORITES_SCHEMA_LATEST),
+        );
       } catch (e) {}
 
       // Collapsed subsections (persisted)
@@ -1572,6 +1581,11 @@
         activeTab = tab;
         document.getElementById("empty").style.display = "none";
         document.getElementById("content").style.display = "block";
+        // Clear any active search filter so the sidebar reflects the new tab.
+        // Otherwise the user gets stuck looking at search results that have
+        // nothing to do with where they just navigated.
+        const search = document.getElementById("search");
+        if (search && search.value) search.value = "";
         renderTabList();
         try {
           renderTabContent(tab);
@@ -1809,7 +1823,7 @@
         tr.classList.toggle("modified", mod);
       }
       function startHookshotCapture(btn) {
-        if (_capBtn) cancelBindCapture();
+        if (_capBtn) _endCapture();
         _capBtn = btn;
         _capCmd = "__hookshot__";
         btn.classList.add("capturing");
@@ -1845,6 +1859,7 @@
         // Only left-click generates a `click` event — only swallow then. For
         // right/middle/back/forward we'd be eating an unrelated future click.
         if (e.button === 0) {
+          _swallowClickQueued = true;
           document.addEventListener("click", _swallowNextClick, {
             once: true,
             capture: true,
@@ -1858,17 +1873,13 @@
       }
       function cancelHookshotCapture() {
         if (!_capBtn) return;
-        _capBtn.textContent = cfg.hookshot.key || "???";
+        // Restore the button text from current state (cfg might be null in
+        // pathological cases — fall back to "???" so we never crash).
+        const restore = cfg?.hookshot?.key || "???";
+        _capBtn.textContent = restore;
         _capBtn.classList.remove("capturing");
-        _capBtn.classList.toggle("unbound", !cfg.hookshot.key);
-        document.removeEventListener("keydown", _onHookshotKey, true);
-        document.removeEventListener("mousedown", _onHookshotMouse, true);
-        document.removeEventListener("wheel", _onHookshotWheel, {
-          capture: true,
-        });
-        document.removeEventListener("contextmenu", _suppressContextMenu, true);
-        _capBtn = null;
-        _capCmd = null;
+        _capBtn.classList.toggle("unbound", !cfg?.hookshot?.key);
+        _endCapture();
       }
       function applyHookshotKey(key) {
         if (key) unbindKeyFromOtherCmds(key, "__hookshot__");
@@ -1882,21 +1893,15 @@
           btn.classList.remove("capturing");
           btn.classList.toggle("unbound", !key);
         }
-        document.removeEventListener("keydown", _onHookshotKey, true);
-        document.removeEventListener("mousedown", _onHookshotMouse, true);
-        document.removeEventListener("wheel", _onHookshotWheel, {
-          capture: true,
-        });
-        document.removeEventListener("contextmenu", _suppressContextMenu, true);
-        _capBtn = null;
-        _capCmd = null;
+        _endCapture();
         const row = document.querySelector('tr[data-cmd="__hookshot__"]');
         if (row) markHookshotMod(row);
         refreshBadge();
       }
 
       let _capBtn = null,
-        _capCmd = null;
+        _capCmd = null,
+        _swallowClickQueued = false;
       // Suppress the browser's contextmenu event while bind capture is active.
       // Right-click fires BOTH mousedown (which captures MOUSE2) AND contextmenu
       // (which would otherwise pop the favorites context menu). Eat the latter.
@@ -1911,9 +1916,34 @@
         e.preventDefault();
         e.stopPropagation();
         e.stopImmediatePropagation();
+        _swallowClickQueued = false;
+      }
+      // Single teardown for ALL capture listeners (both regular bind and hookshot
+      // variants). Cheap when a listener wasn't registered. Ensures that switching
+      // capture modes (e.g. starting hookshot capture while a regular bind is
+      // active) can't leak the previous mode's listeners. Also cleans up the
+      // queued click swallower so a stale Escape can't eat unrelated future clicks.
+      function _endCapture() {
+        document.removeEventListener("keydown", _onBindKey, true);
+        document.removeEventListener("mousedown", _onBindMouse, true);
+        document.removeEventListener("wheel", _onBindWheel, { capture: true });
+        document.removeEventListener("keydown", _onHookshotKey, true);
+        document.removeEventListener("mousedown", _onHookshotMouse, true);
+        document.removeEventListener("wheel", _onHookshotWheel, {
+          capture: true,
+        });
+        document.removeEventListener("contextmenu", _suppressContextMenu, true);
+        if (_swallowClickQueued) {
+          document.removeEventListener("click", _swallowNextClick, {
+            capture: true,
+          });
+          _swallowClickQueued = false;
+        }
+        _capBtn = null;
+        _capCmd = null;
       }
       function startBindCapture(btn, cmd) {
-        if (_capBtn) cancelBindCapture();
+        if (_capBtn) _endCapture();
         _capBtn = btn;
         _capCmd = cmd;
         btn.classList.add("capturing");
@@ -1928,16 +1958,13 @@
       }
       function cancelBindCapture() {
         if (!_capBtn) return;
-        const keys = cfg.bindMap[_capCmd] || [];
+        // Restore button text from current state. cfg may be null in pathological
+        // cases — fall back to "???" so we never crash.
+        const keys = (cfg && cfg.bindMap && cfg.bindMap[_capCmd]) || [];
         _capBtn.textContent = keys.length ? keys.join(", ") : "???";
         _capBtn.classList.remove("capturing");
         _capBtn.classList.toggle("unbound", !keys.length);
-        document.removeEventListener("keydown", _onBindKey, true);
-        document.removeEventListener("mousedown", _onBindMouse, true);
-        document.removeEventListener("wheel", _onBindWheel, { capture: true });
-        document.removeEventListener("contextmenu", _suppressContextMenu, true);
-        _capBtn = null;
-        _capCmd = null;
+        _endCapture();
       }
       function _onBindKey(e) {
         e.preventDefault();
@@ -1963,6 +1990,7 @@
         // Only left-click generates a `click` event — only swallow then. For
         // right/middle/back/forward we'd be eating an unrelated future click.
         if (e.button === 0) {
+          _swallowClickQueued = true;
           document.addEventListener("click", _swallowNextClick, {
             once: true,
             capture: true,
@@ -2024,12 +2052,7 @@
           btn.classList.remove("capturing");
           btn.classList.toggle("unbound", !keys.length);
         }
-        document.removeEventListener("keydown", _onBindKey, true);
-        document.removeEventListener("mousedown", _onBindMouse, true);
-        document.removeEventListener("wheel", _onBindWheel, { capture: true });
-        document.removeEventListener("contextmenu", _suppressContextMenu, true);
-        _capBtn = null;
-        _capCmd = null;
+        _endCapture();
       }
       function _browserKeyToQuake(e) {
         const map = {
@@ -2065,6 +2088,31 @@
           F11: "F11",
           F12: "F12",
         };
+        // Numpad keys — use e.code (physical key identifier), not e.key (which
+        // collapses to "5", "Enter", etc., colliding with the main row).
+        // ezQuake names them KP_0…KP_9, KP_PLUS, KP_MINUS, KP_STAR (multiply),
+        // KP_SLASH (divide), KP_DEL (decimal), KP_ENTER, KP_NUMLOCK.
+        if (e.code && e.code.startsWith("Numpad")) {
+          const codeMap = {
+            Numpad0: "KP_INS",
+            Numpad1: "KP_END",
+            Numpad2: "KP_DOWNARROW",
+            Numpad3: "KP_PGDN",
+            Numpad4: "KP_LEFTARROW",
+            Numpad5: "KP_5",
+            Numpad6: "KP_RIGHTARROW",
+            Numpad7: "KP_HOME",
+            Numpad8: "KP_UPARROW",
+            Numpad9: "KP_PGUP",
+            NumpadAdd: "KP_PLUS",
+            NumpadSubtract: "KP_MINUS",
+            NumpadMultiply: "KP_STAR",
+            NumpadDivide: "KP_SLASH",
+            NumpadDecimal: "KP_DEL",
+            NumpadEnter: "KP_ENTER",
+          };
+          if (codeMap[e.code]) return codeMap[e.code];
+        }
         if (map[e.key]) return map[e.key];
         if (e.key.length === 1) return e.key.toLowerCase();
         return null;
@@ -2207,11 +2255,15 @@
 
       // ── Helpers ───────────────────────────────────────────────────────────────────
       function esc(s) {
+        // Escape both quote types so values used inside inline event handlers
+        // (e.g. `oninput="updateVar('${k}', …)"`) can't break out of the attribute.
+        // Currently safe given the cvar name regex, but defense-in-depth.
         return String(s)
           .replace(/&/g, "&amp;")
           .replace(/</g, "&lt;")
           .replace(/>/g, "&gt;")
-          .replace(/"/g, "&quot;");
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
       }
       function rgbToHex(r, g, b) {
         return (
@@ -2246,7 +2298,12 @@
 
       // ── Parser ────────────────────────────────────────────────────────────────────
       function parseCfg(text) {
-        const lines = text.split("\n"),
+        // Preserve the source EOL (CRLF on Windows configs, LF elsewhere) so
+        // re-saved files don't end up mixed-EOL — looks corrupt in external
+        // editors. Split on \n and strip trailing \r so internal line content
+        // is consistent; reattach the original EOL when serializing.
+        const eol = text.includes("\r\n") ? "\r\n" : "\n";
+        const lines = text.split("\n").map((l) => l.replace(/\r$/, "")),
           sections = [],
           varMap = {},
           bindMap = {};
@@ -2289,7 +2346,8 @@
         // wouldn't find weapon binds after a save.
         for (const raw of lines) {
           const t = raw.trim();
-          const bm = t.match(/^bind\s+(\S+)\s+"([^"]*)"$/i);
+          // Tolerate trailing whitespace and inline `// comment` after the bind.
+          const bm = t.match(/^bind\s+(\S+)\s+"([^"]*)"\s*(?:\/\/.*)?$/i);
           if (bm) {
             const [, k, rawCmd] = bm;
             const c = rawCmd.replace(
@@ -2317,6 +2375,7 @@
           bindMap,
           bindChanged: new Set(),
           lines,
+          eol,
           hookshot,
           ctfLines: null, // populated by processFileContent if ctf.cfg exists
           ctfPath: null,
@@ -2573,6 +2632,12 @@
       // After a successful save/export, snapshot the current state as the new baseline
       function snapshotBaseline() {
         if (!cfg) return;
+        // Refresh cfg.lines to reflect what we just wrote — otherwise lines
+        // appended in this save (e.g. previously-absent vars promoted from null
+        // original to non-empty value) would be silently dropped on the next save
+        // because they don't exist in cfg.lines and the "newVars" branch only
+        // emits entries with original === null.
+        cfg.lines = _splitLines(buildCfgOutput());
         for (const e of Object.values(cfg.varMap)) e.original = e.value;
         cfg.bindChanged.clear();
         cfg.hookshot.original = {
@@ -2808,10 +2873,8 @@
             div.dataset.key = key;
             div.innerHTML = `<span class="vr-key">${esc(lbl)}</span><span class="vr-sec">${esc(sec.n)} · ${esc(tab.n)}</span>`;
             div.onclick = () => {
-              document
-                .querySelectorAll(".var-result")
-                .forEach((el) => el.classList.remove("active"));
-              div.classList.add("active");
+              // No need to mark active — selectTab clears the search input,
+              // wiping the result list on the next render.
               if (isBind) navigateToSection(sec.n);
               else navigateToVar(key);
             };
@@ -2896,17 +2959,19 @@
       function revertWeaponBindRewrites(lines) {
         return lines.map((line) =>
           line.replace(
-            /;alias\s+_lastweapon\s+(?:impulse\s+[1-8]|weapon\s+[1-8](?:\s+[1-8])*)("\s*)$/,
+            /;alias\s+_lastweapon\s+(?:impulse\s+[1-8]|weapon\s+[1-8](?:\s+[1-8])*)("\s*(?:\/\/.*)?)$/,
             "$1",
           ),
         );
       }
       // Inline `;alias _lastweapon <same payload>` into each plain weapon bind.
-      // Skips multi-command binds (those with extra `;…` already present).
+      // Tolerates trailing whitespace and inline `// comments` so manually-
+      // annotated configs still get the tracking. Skips multi-command binds
+      // (those with extra `;…` already present in the payload).
       function applyWeaponBindRewrites(lines) {
         return lines.map((line) => {
           const m = line.match(
-            /^(\s*bind\s+\S+\s+")(impulse\s+[1-8]|weapon\s+[1-8](?:\s+[1-8])*)("\s*)$/,
+            /^(\s*bind\s+\S+\s+")(impulse\s+[1-8]|weapon\s+[1-8](?:\s+[1-8])*)("\s*(?:\/\/.*)?)$/,
           );
           if (!m) return line;
           return `${m[1]}${m[2]};alias _lastweapon ${m[2]}${m[3]}`;
@@ -2986,7 +3051,15 @@
             out.push('alias on_enter_ctf "exec ctf.cfg"');
           }
         }
-        return out.join("\n");
+        // Use the source EOL (CRLF on Windows configs, LF elsewhere) so the
+        // saved file doesn't end up mixed-EOL. Falls back to LF on legacy cfg.
+        return out.join(cfg.eol || "\n");
+      }
+
+      // Split a file's text into lines while stripping the trailing CR from
+      // each — keeps cfg.lines / cfg.ctfLines free of mixed CRLF artifacts.
+      function _splitLines(text) {
+        return text.split("\n").map((l) => l.replace(/\r$/, ""));
       }
 
       // Build the content for ctf.cfg — preserves any non-hookshot lines that already live there
@@ -3007,7 +3080,7 @@
         }
         // Trim trailing blank lines for cleanliness
         while (out.length && !out[out.length - 1].trim()) out.pop();
-        return out.join("\n");
+        return out.join(cfg.eol || "\n");
       }
 
       async function exportCfg() {
@@ -3054,7 +3127,7 @@
                       (ctfRes.error || "unknown error"),
                   );
                 } else {
-                  cfg.ctfLines = ctfContent.split("\n");
+                  cfg.ctfLines = _splitLines(ctfContent);
                   cfg.ctfPath = ctfPath;
                 }
               }
@@ -3068,7 +3141,9 @@
         const a = document.createElement("a");
         a.href = URL.createObjectURL(blob);
         a.download = cfg.filename || "config.cfg";
+        document.body.appendChild(a);
         a.click();
+        document.body.removeChild(a);
         URL.revokeObjectURL(a.href);
         snapshotBaseline();
       }
@@ -3085,7 +3160,7 @@
           if (ctfInfo && ctfInfo.path) {
             cfg.ctfPath = ctfInfo.path;
             if (ctfInfo.content != null) {
-              cfg.ctfLines = ctfInfo.content.split("\n");
+              cfg.ctfLines = _splitLines(ctfInfo.content);
               // Only let ctf.cfg's hookshot win if main config doesn't already
               // have one. Otherwise a stale ctf.cfg from earlier testing would
               // mark the user's "always on" hookshot as ctf-only on every reload.
@@ -3111,7 +3186,16 @@
           if (TABS.length) selectTab(TABS[0]);
           dbg.textContent = name;
         } catch (err) {
+          // Hard fail: clear cfg so subsequent UI actions don't operate on a
+          // half-constructed object. Surface the error visibly via the filename
+          // strip AND an alert so the user actually notices the problem.
+          console.error("processFileContent failed:", err);
+          cfg = null;
+          filePath = null;
+          fileHandle = null;
+          updateSaveExportStyling();
           dbg.textContent = "ERR: " + err.message;
+          alert("Failed to load config: " + err.message);
         }
       }
 
@@ -3205,20 +3289,15 @@
                         (ctfRes.error || "unknown error"),
                     );
                   else {
-                    cfg.ctfLines = ctfContent.split("\n");
+                    cfg.ctfLines = _splitLines(ctfContent);
                   }
                 }
               }
             }
-            // Update originals so subsequent edits diff against the now-saved state
-            cfg.hookshot.original = {
-              style: cfg.hookshot.style,
-              key: cfg.hookshot.key,
-              location: cfg.hookshot.location,
-            };
-            for (const e of Object.values(cfg.varMap)) e.original = e.value;
-            cfg.bindChanged.clear();
-            refreshBadge();
+            // snapshotBaseline updates cfg.lines, originals, bindChanged, and badge.
+            // Critical: this must run AFTER any ctf.cfg write so that buildCfgOutput's
+            // re-render of cfg.lines reflects the same state we just saved.
+            snapshotBaseline();
           } else if (fileHandle) {
             const writable = await fileHandle.createWritable();
             await writable.write(content);
@@ -3242,7 +3321,9 @@
             const a = document.createElement("a");
             a.href = URL.createObjectURL(blob);
             a.download = cfg.filename || "config.cfg";
+            document.body.appendChild(a);
             a.click();
+            document.body.removeChild(a);
             URL.revokeObjectURL(a.href);
           }
         } catch (err) {
@@ -3395,15 +3476,19 @@
       }
       function dismissCoach() {
         document.getElementById("coach-overlay").style.display = "none";
+        // Once dismissed, drop the resize listener — no reason to keep
+        // recomputing for an overlay that will never show again this session.
+        window.removeEventListener("resize", _coachResizeHandler);
         try {
           localStorage.setItem("ez-onboarded", "1");
         } catch (e) {}
       }
       // Reposition the coach mark if the window is resized while it's open
-      window.addEventListener("resize", () => {
+      function _coachResizeHandler() {
         const overlay = document.getElementById("coach-overlay");
         if (overlay && overlay.style.display === "block") showCoach();
-      });
+      }
+      window.addEventListener("resize", _coachResizeHandler);
 
       // Init
       renderTabList();
@@ -3426,16 +3511,25 @@
       // Window close guard — main process pings us before closing; we confirm if dirty.
       if (window.electronAPI && window.electronAPI.onBeforeClose) {
         window.electronAPI.onBeforeClose(() => {
-          if (!hasUnsavedChanges()) {
-            window.electronAPI.confirmClose();
-            return;
+          // Belt-and-suspenders: if anything in here throws, the main process's
+          // 2s fallback will still close the window. The try/catch is a faster
+          // path so the user doesn't notice the delay.
+          try {
+            if (!hasUnsavedChanges()) {
+              window.electronAPI.confirmClose();
+              return;
+            }
+            showConfirm(
+              "Unsaved changes",
+              "You have unsaved changes that will be lost if you close the app.",
+              "Discard & Close",
+              () => window.electronAPI.confirmClose(),
+            );
+          } catch (e) {
+            try {
+              window.electronAPI.confirmClose();
+            } catch (_) {}
           }
-          showConfirm(
-            "Unsaved changes",
-            "You have unsaved changes that will be lost if you close the app.",
-            "Discard & Close",
-            () => window.electronAPI.confirmClose(),
-          );
         });
       }
     </script>

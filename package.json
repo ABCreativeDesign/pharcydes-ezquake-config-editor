@@ -1,6 +1,6 @@
 {
   "name": "pharcydes-ezquake-config-editor",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "PharCyde's ezQuake Config Editor",
   "main": "main.js",
   "scripts": {
@@ -15,7 +15,8 @@
     "win": {
       "target": "portable",
       "icon": "icon.ico",
-      "sign": false
+      "sign": false,
+      "artifactName": "PCs_ezQuakeCFGEditor_v${version}.exe"
     },
     "files": [
       "config-editor.html",
@@ -23,11 +24,7 @@
       "preload.js",
       "icon.ico",
       "defaults/**/*"
-    ],
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true
-    }
+    ]
   },
   "devDependencies": {
     "electron": "^35.0.0",

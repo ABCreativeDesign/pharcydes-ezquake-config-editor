@@ -175,7 +175,13 @@ const TAB_DEFS = [
 const TABS = [];
 for (const [tabName, arrName] of TAB_DEFS) {
   const arrMatch = menuSrc.match(new RegExp(`setting ${arrName}\\[\\]\\s*=\\s*\\{([\\s\\S]*?)\\};`));
-  if (!arrMatch) { console.warn(`Array not found: ${arrName}`); continue; }
+  // Fail hard if a tab array is missing from menu_options.c. Silently shipping
+  // an empty tab would mean entire UI categories vanish in the next release.
+  if (!arrMatch) {
+    console.error(`ERROR: setting array not found: ${arrName} (tab "${tabName}")`);
+    console.error('  → ezquake-source-master/src/menu_options.c may have changed structure');
+    process.exit(1);
+  }
 
   const tab = { n: tabName, secs: [] };
   let curSec = null;

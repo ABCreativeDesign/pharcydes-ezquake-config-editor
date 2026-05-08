@@ -35,7 +35,7 @@ function createWindow() {
   const win = new BrowserWindow({
     width: 1280,
     height: 820,
-    minWidth: 700,
+    minWidth: 800,
     icon: path.join(__dirname, 'icon.ico'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -47,11 +47,19 @@ function createWindow() {
   win.loadFile('config-editor.html');
   win.setTitle("PharCyde's ezQuake Config Editor");
 
-  // Intercept window close — give the renderer a chance to confirm if there are unsaved changes
+  // Intercept window close — give the renderer a chance to confirm if there are unsaved changes.
+  // Fallback timer: if the renderer doesn't reply within 2s (e.g. throws in its handler, or
+  // the IPC bridge isn't ready), force the close anyway so the user is never stuck.
   win.on('close', (e) => {
     if (forceClose) return;
     e.preventDefault();
     win.webContents.send('app:before-close');
+    setTimeout(() => {
+      if (!forceClose && !win.isDestroyed()) {
+        forceClose = true;
+        win.close();
+      }
+    }, 2000);
   });
 
   mainWin = win;
