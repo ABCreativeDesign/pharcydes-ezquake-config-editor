@@ -1,6 +1,6 @@
 {
   "name": "pharcydes-ezquake-config-editor",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "PharCyde's ezQuake Config Editor",
   "main": "main.js",
   "scripts": {

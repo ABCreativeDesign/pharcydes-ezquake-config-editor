@@ -1134,7 +1134,7 @@
             class="btn-wrap tip-right"
             data-tip="Load a Default CTF starter (includes hookshot binds) — customize and export as your own."
           >
-            <button id="btn-default-ctf" onclick="loadDefault('ctf')">
+            <button id="btn-default-ctf" onclick="loadDefaultCtfWithWarning()">
               Default CTF
             </button>
           </span>
@@ -1694,6 +1694,11 @@
           d: "Press and hold to switch to the hook AND fire. Release to stop. Most popular among CTF players.",
         },
         {
+          v: "crt97",
+          l: "CRT97 (legacy)",
+          d: "Community-shared script using +grap/-grap aliases with `wait` commands and impulse 69 for previous-weapon swap. Works on servers where the standard Hold-to-grapple's swap-back fails.",
+        },
+        {
           v: "tap",
           l: "Tap to fire",
           d: "Press to fire the hook for as long as held; doesn't switch back to your previous weapon.",
@@ -1757,9 +1762,29 @@
         ctfCheck.disabled = !window.electronAPI;
         ctfCheck.onchange = () => {
           if (!cfg) return;
-          cfg.hookshot.location = ctfCheck.checked ? "ctf" : "main";
-          refreshBadge();
-          markHookshotMod(tr);
+          // Confirm before opting in — splitting the hookshot into ctf.cfg is a
+          // niche/legacy workflow most users don't need. Going back to "main"
+          // is safe and doesn't prompt.
+          if (ctfCheck.checked) {
+            showConfirm(
+              "Use ctf.cfg?",
+              "This splits your hookshot binds into a separate ctf.cfg file that ezQuake auto-loads on CTF servers only. It's a niche, legacy workflow — most users should keep the hookshot in their main config.cfg. Are you sure?",
+              "Yes, use ctf.cfg",
+              () => {
+                cfg.hookshot.location = "ctf";
+                refreshBadge();
+                markHookshotMod(tr);
+              },
+              () => {
+                // User cancelled — revert the checkbox to unchecked
+                ctfCheck.checked = false;
+              },
+            );
+          } else {
+            cfg.hookshot.location = "main";
+            refreshBadge();
+            markHookshotMod(tr);
+          }
         };
         row2.appendChild(ctfCheck);
         const lblText = document.createElement("span");
@@ -1804,7 +1829,7 @@
         tip.className = "tip";
         tip.textContent = "?";
         tip.dataset.tip =
-          'Bind a key to the CTF grappling hook (impulse 22).\n\nStyles:\n• Hold to grapple — switches AND fires while held; auto-swaps back to your previous weapon on release. The popular setup.\n• Tap to fire — fires for as long as held; weapon stays on the hook after.\n• Switch only — switches to the hook, you fire manually.\n\nSave to ctf.cfg: writes the binds to a sibling ctf.cfg file. ezQuake auto-loads ctf.cfg on entering a CTF server (requires alias on_enter_ctf "exec ctf.cfg" — added automatically if not present). Keeps the binds out of the way on non-CTF servers.';
+          'Bind a key to the CTF grappling hook (impulse 22).\n\nStyles:\n• Hold to grapple — switches AND fires while held; auto-swaps back via client-side weapon tracking on release. The popular setup.\n• Tap to fire — fires for as long as held; weapon stays on the hook after.\n• Switch only — switches to the hook, you fire manually.\n• CRT97 (legacy) — community-shared script using +grap/-grap aliases with `wait` commands and impulse 69 for swap-back. Try this if Hold to grapple\'s swap-back fails on a server.\n\nSave to ctf.cfg: writes the binds to a sibling ctf.cfg file. ezQuake auto-loads ctf.cfg on entering a CTF server (requires alias on_enter_ctf "exec ctf.cfg" — added automatically if not present). Keeps the binds out of the way on non-CTF servers.';
         tdT.appendChild(tip);
 
         tr.appendChild(tdL);
@@ -2385,23 +2410,34 @@
       // Shared hookshot detection — used for both config.cfg and ctf.cfg
       function detectHookshotInLines(lines) {
         let hasPlusHookAlias = false,
-          hasMinusHookAlias = false;
+          hasMinusHookAlias = false,
+          hasPlusGrapAlias = false,
+          hasMinusGrapAlias = false;
         let plusHookKey = null,
+          plusGrapKey = null,
           fireKey = null,
           impulseKey = null;
         for (const raw of lines) {
           const t = raw.trim();
           if (/^alias\s+\+hook\b/i.test(t)) hasPlusHookAlias = true;
           if (/^alias\s+-hook\b/i.test(t)) hasMinusHookAlias = true;
+          if (/^alias\s+\+grap\b/i.test(t)) hasPlusGrapAlias = true;
+          if (/^alias\s+-grap\b/i.test(t)) hasMinusGrapAlias = true;
           let m = t.match(/^bind\s+(\S+)\s+"\+hook"$/i);
           if (m) plusHookKey = m[1];
+          m = t.match(/^bind\s+(\S+)\s+"\+grap"$/i);
+          if (m) plusGrapKey = m[1];
           m = t.match(/^bind\s+(\S+)\s+"\+fire\s+22"$/i);
           if (m) fireKey = m[1];
           m = t.match(/^bind\s+(\S+)\s+"impulse\s+22"$/i);
           if (m) impulseKey = m[1];
         }
+        // Order matters: hold (+hook) takes precedence if both are present
+        // somehow — though they shouldn't coexist after a save.
         if (hasPlusHookAlias && hasMinusHookAlias && plusHookKey)
           return { style: "hold", key: plusHookKey };
+        if (hasPlusGrapAlias && hasMinusGrapAlias && plusGrapKey)
+          return { style: "crt97", key: plusGrapKey };
         if (fireKey) return { style: "tap", key: fireKey };
         if (impulseKey) return { style: "switch", key: impulseKey };
         return { style: null, key: null };
@@ -2654,7 +2690,7 @@
       }
 
       // Generic confirm modal — pass the action label for the OK button
-      function showConfirm(title, body, okLabel, onOk) {
+      function showConfirm(title, body, okLabel, onOk, onCancel) {
         const modal = document.getElementById("confirm-modal");
         document.getElementById("confirm-title").textContent = title;
         document.getElementById("confirm-body").textContent = body;
@@ -2664,7 +2700,10 @@
         const close = () => {
           modal.style.display = "none";
         };
-        cancelBtn.onclick = close;
+        cancelBtn.onclick = () => {
+          close();
+          if (onCancel) onCancel();
+        };
         okBtn.onclick = () => {
           close();
           onOk();
@@ -2917,6 +2956,17 @@
           ];
         if (style === "tap") return [`bind ${key} "+fire 22"`];
         if (style === "switch") return [`bind ${key} "impulse 22"`];
+        if (style === "crt97")
+          // Community-shared script. Uses `wait` commands so each step (impulse,
+          // attack, release) finishes its frame before the next runs — gives the
+          // engine time to process. Relies on impulse 69 for previous-weapon swap;
+          // works on some KTX builds where Hold-to-grapple's _lastweapon doesn't
+          // (apparently the timing matters for impulse 69 to take effect).
+          return [
+            'alias +grap "impulse 22 ; wait ; +attack"',
+            'alias -grap "-attack ; wait ; wait ; impulse 69"',
+            `bind ${key} "+grap"`,
+          ];
         return [];
       }
 
@@ -2943,8 +2993,11 @@
         return lines.filter((line) => {
           const t = line.trim();
           if (/^alias\s+[+-]hook\b/i.test(t)) return false;
+          if (/^alias\s+[+-]grap\b/i.test(t)) return false;
           if (
-            /^bind\s+\S+\s+"(\+hook|-hook|\+fire\s+22|impulse\s+22)"$/i.test(t)
+            /^bind\s+\S+\s+"(\+hook|-hook|\+fire\s+22|impulse\s+22|\+grap|-grap)"$/i.test(
+              t,
+            )
           )
             return false;
           if (/^alias\s+_lastweapon\b/i.test(t)) return false;
@@ -3247,6 +3300,18 @@
             cfg.exportName = type === "ctf" ? "ctf.cfg" : "config.cfg";
           });
         });
+      }
+
+      // Wrapper for the Default CTF button — adds a "are you sure?" warning so
+      // casual users don't accidentally start from a CTF-flavoured config when
+      // Default DM is what most players actually want.
+      function loadDefaultCtfWithWarning() {
+        showConfirm(
+          "Load Default CTF?",
+          "The Default CTF starter is for players specifically setting up for CTF play — it includes hookshot binds and CTF-themed defaults. Most users should use Default DM and only add a hookshot if their server actually supports it. Continue?",
+          "Yes, load Default CTF",
+          () => loadDefault("ctf"),
+        );
       }
 
       function saveCfg() {
