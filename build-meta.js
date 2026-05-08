@@ -213,6 +213,35 @@ for (const tab of TABS) {
   }
 }
 
+// Inject CTF hookshot synthetic bind into Controls → Teamplay
+const teamplaySec = TABS.find(t=>t.n==='Controls')?.secs.find(s=>s.n==='Teamplay');
+if (teamplaySec) teamplaySec.binds.push({ l:'CTF Hookshot', c:'__hookshot__', special:'hookshot' });
+
+// Inject windowed-mode + display cvars into System → Screen Settings.
+// These exist in META (with descriptions) but the in-game menu hides them behind
+// custom widgets (the *Read placeholders), so they don't appear in any TABS section.
+// Labels chosen for clarity since deriveLabel doesn't strip the `vid_` prefix.
+const screenSec = TABS.find(t=>t.n==='System')?.secs.find(s=>s.n==='Screen Settings');
+if (screenSec) {
+  const extras = [
+    { k:'vid_fullscreen',          l:'Fullscreen Mode' },
+    { k:'vid_width',               l:'Fullscreen Width' },
+    { k:'vid_height',              l:'Fullscreen Height' },
+    { k:'vid_win_width',           l:'Windowed Width' },
+    { k:'vid_win_height',          l:'Windowed Height' },
+    { k:'vid_win_displaynumber',   l:'Windowed Display Number' },
+    { k:'vid_win_borderless',      l:'Borderless Window' },
+    { k:'vid_xpos',                l:'Window X Position' },
+    { k:'vid_ypos',                l:'Window Y Position' },
+    { k:'vid_displayfrequency',    l:'Display Refresh Rate (Hz)' },
+  ];
+  for (const x of extras) {
+    if (!screenSec.vars.includes(x.k)) screenSec.vars.push(x.k);
+    if (META[x.k]) META[x.k].l = x.l;
+    else          META[x.k] = { l: x.l };
+  }
+}
+
 const totalBinds = TABS.reduce((a,t)=>a+t.secs.reduce((b,s)=>b+s.binds.length,0),0);
 const totalVars  = TABS.reduce((a,t)=>a+t.secs.reduce((b,s)=>b+s.vars.length,0),0);
 console.log(`TABS: ${TABS.length} tabs, ${TABS.reduce((a,t)=>a+t.secs.length,0)} sections, ${totalVars} vars, ${totalBinds} binds`);

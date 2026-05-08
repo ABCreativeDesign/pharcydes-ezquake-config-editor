@@ -10,8 +10,10 @@ const meta     = fs.readFileSync(path.join(BASE, 'meta-generated.js'), 'utf8');
 // Safety: prevent </script> in the injected data from breaking the HTML parser
 const safeData = meta.trim().replace(/<\/script>/gi, '<\\/script>');
 
-// Replace the placeholder line — the template has: const META={};const TABS=[];/*META_INJECT*/
-const result = template.replace('const META={};const TABS=[];/*META_INJECT*/', safeData);
+// Replace the placeholder — tolerate any whitespace/line breaks the formatter may insert
+// Matches: const META={};const TABS=[];/*META_INJECT*/  (or formatted variants)
+const placeholderRe = /const\s+META\s*=\s*\{\s*\};?\s*const\s+TABS\s*=\s*\[\s*\];?\s*\/\*META_INJECT\*\//;
+const result = template.replace(placeholderRe, safeData);
 
 if (result === template) {
   console.error('ERROR: placeholder not found in template');
