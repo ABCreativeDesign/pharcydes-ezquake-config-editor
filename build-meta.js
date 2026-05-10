@@ -172,6 +172,38 @@ const TAB_DEFS = [
   ['Config',   'settconfig_arr'],
 ];
 
+// Subsection order overrides — menu_options.c lists them in C-source order,
+// which doesn't always match the most useful UI grouping. Each entry lists the
+// preferred order for that tab; any subsection not listed keeps its source-order
+// position at the end.
+const SUBSECTION_ORDER = {
+  Player: [
+    'Player Settings',
+    'Team Skin & Colors',
+    'Enemy Skin & Colors',
+    'Weapon Handling',
+    'Movement',
+  ],
+  Graphics: [
+    'Field Of View',
+    'Textures',
+    'Player & Weapon Model',
+    'Environment',
+    'Projectiles',
+    'Lighting',
+    'Presets',
+  ],
+  Controls: [
+    'Mouse Settings',
+    'Movement',
+    'Weapons',
+    'Teamplay',
+    'Chat settings',
+    'Miscellaneous',
+    'Demo & Spec',
+  ],
+};
+
 const TABS = [];
 for (const [tabName, arrName] of TAB_DEFS) {
   const arrMatch = menuSrc.match(new RegExp(`setting ${arrName}\\[\\]\\s*=\\s*\\{([\\s\\S]*?)\\};`));
@@ -219,9 +251,27 @@ for (const tab of TABS) {
   }
 }
 
-// Inject CTF hookshot synthetic bind into Controls → Teamplay
+// Apply per-tab subsection-order overrides. Any subsection not named in an
+// override keeps its source-order position at the end of the listed ones.
+for (const tab of TABS) {
+  const order = SUBSECTION_ORDER[tab.n];
+  if (!order) continue;
+  const byName = new Map(tab.secs.map(s => [s.n, s]));
+  const reordered = [];
+  for (const name of order) {
+    const sec = byName.get(name);
+    if (sec) { reordered.push(sec); byName.delete(name); }
+  }
+  // Append any leftovers (defensive — catches subsection-name drift in source)
+  for (const sec of byName.values()) reordered.push(sec);
+  tab.secs = reordered;
+}
+
+// Inject CTF hookshot synthetic bind at the top of Controls → Teamplay so
+// the most prominent CTF action is visible without scrolling past unrelated
+// macros and team aliases.
 const teamplaySec = TABS.find(t=>t.n==='Controls')?.secs.find(s=>s.n==='Teamplay');
-if (teamplaySec) teamplaySec.binds.push({ l:'CTF Hookshot', c:'__hookshot__', special:'hookshot' });
+if (teamplaySec) teamplaySec.binds.unshift({ l:'CTF Hookshot', c:'__hookshot__', special:'hookshot' });
 
 // Inject windowed-mode + display cvars into System → Screen Settings.
 // These exist in META (with descriptions) but the in-game menu hides them behind

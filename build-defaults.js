@@ -18,9 +18,11 @@ let dm = src.replace(
 );
 
 // Replace personal info with a placeholder name (Name + Teamchat Name fields)
-// Excludes the header we just wrote (still contains PharCyde) so it stays intact
-dm = dm.replace(/^name\s+"PharCyde"/m, 'name                                  "Bag Of Chips"');
-dm = dm.replace(/^cl_fakename\s+"PharCyde"/m, 'cl_fakename                           "Bag Of Chips"');
+// Excludes the header we just wrote (still contains PharCyde) so it stays intact.
+// "Your Name Here" reads as an obvious template — discoverable on first load,
+// the user fills it in and exports.
+dm = dm.replace(/^name\s+"PharCyde"/m, 'name                                  "Your Name Here"');
+dm = dm.replace(/^cl_fakename\s+"PharCyde"/m, 'cl_fakename                           "Your Name Here"');
 // Move Forward defaults to w (standard WASD) instead of source's g
 dm = dm.replace(/^bind\s+g\s+"\+forward"/m, 'bind w "+forward"');
 // Direct 1:1 weapon binds for keys 1-8 — Axe, SG, SSG, NG, SNG, GL, RL, LG.
@@ -65,8 +67,8 @@ const ctfTail = [
 ].join(eol);
 let ctf = dm.replace(/Default Deathmatch starter/, 'Default CTF starter');
 // CTF-specific name overrides — themed default that the user can change after loading
-ctf = ctf.replace(/^name\s+"Bag Of Chips"/m, 'name                                  "Where\'s Our Flag?"');
-ctf = ctf.replace(/^cl_fakename\s+"Bag Of Chips"/m, 'cl_fakename                           "Where\'s Our Flag?"');
+ctf = ctf.replace(/^name\s+"Your Name Here"/m, 'name                                  "Where\'s Our Flag?"');
+ctf = ctf.replace(/^cl_fakename\s+"Your Name Here"/m, 'cl_fakename                           "Where\'s Our Flag?"');
 // Inline weapon-bind rewrites — append `;alias _lastweapon <same payload>` so each
 // weapon press updates _lastweapon. Handles both `impulse N` and `weapon a b c…` forms.
 ctf = ctf.replace(
